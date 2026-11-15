@@ -5,20 +5,7 @@
 -- is NOT used here; editorial capabilities are granted through an independent
 -- editorial lifecycle.
 
-create policy resource_editorial_capabilities_identity_select
-  on public.resource_editorial_capabilities for select to authenticated
-  using (public.resource_identity_is_owner(identity_id));
-
-create policy resource_editorial_capabilities_service_all
-  on public.resource_editorial_capabilities for all to service_role;
-
--- Grant select on base table to authenticated so the helper function can read it
--- under RLS.
-grant select on table public.resource_editorial_capabilities to authenticated;
-
--- Helper function: is the current authenticated user the owner of the given
--- editorial identity? Used by RLS policies to allow identity owners to read their
--- own capabilities without exposing all identities.
+-- Helper functions FIRST (policies reference them).
 create or replace function public.resource_identity_is_owner(target_identity_id uuid)
 returns boolean
 language plpgsql
@@ -45,3 +32,15 @@ end;
 $$;
 
 grant execute on function public.resource_identity_is_owner(uuid) to authenticated;
+
+-- Policies now reference the helper function.
+create policy resource_editorial_capabilities_identity_select
+  on public.resource_editorial_capabilities for select to authenticated
+  using (public.resource_identity_is_owner(identity_id));
+
+create policy resource_editorial_capabilities_service_all
+  on public.resource_editorial_capabilities for all to service_role;
+
+-- Grant select on base table to authenticated so the helper function can read it
+-- under RLS.
+grant select on table public.resource_editorial_capabilities to authenticated;

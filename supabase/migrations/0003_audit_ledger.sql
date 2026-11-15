@@ -54,31 +54,56 @@ grant execute on function public.resource_article_is_editor(uuid) to authenticat
 -- ---------------------------------------------------------------------------
 -- Editorial lifecycle functions (service_role only).
 -- These are the only write path for editorial operations. Each function
--- validates actor identity, capability, author/reviewer separation, transition
--- validity, revision identity, MFA/AAL2 where required, and records an audit
--- event atomically.
+-- derives the actor from auth.uid() (the current authenticated session),
+-- never trusting caller-supplied actor IDs. Each function validates:
+--   - actor identity via auth.uid()
+--   - capability via resource_editorial_capabilities
+--   - author/reviewer separation
+--   - transition validity
+--   - revision identity
+-- and records an audit event atomically.
 -- ---------------------------------------------------------------------------
 
 -- submit_resource_article: draft -> in_review (actor = author)
 create or replace function public.submit_resource_article(
-  p_article_id uuid,
-  p_actor_id uuid
+  p_article_id uuid
 )
 returns void
 language plpgsql
 security definer
 set search_path = public
 as $$
+declare
+  actor_id uuid;
+  actor_identity_id uuid;
 begin
-  -- Verify actor is the article author
-  if not exists (
-    select 1 from public.resource_articles
-    where id = p_article_id and author_identity_id = p_actor_id
-  ) then
-    raise exception using errcode = '42501', message = 'Only the author may submit';
+  -- Derive actor from auth.uid() (current authenticated session), never trust caller input.
+  select auth.uid() into actor_id;
+  if actor_id is null then
+    raise exception using errcode = '42501', message = 'Authentication required';
   end if;
 
-  -- Verify current status is draft
+  -- Resolve actor's editorial identity.
+  select ei.id into actor_identity_id
+  from public.resource_editorial_identities ei
+  where ei.user_id = actor_id
+    and ei.is_active = true
+    and ei.email_verified = true;
+
+  if actor_identity_id is null then
+    raise exception using errcode = '42501', message = 'No active editorial identity for caller';
+  end if;
+
+  -- Verify actor has author capability.
+  if not exists (
+    select 1 from public.resource_editorial_capabilities ec
+    where ec.identity_id = actor_identity_id
+      and ec.role = 'author'
+  ) then
+    raise exception using errcode = '42501', message = 'Actor does not have author capability';
+  end if;
+
+  -- Verify article exists and is in draft status.
   if not exists (
     select 1 from public.resource_articles
     where id = p_article_id and status = 'draft'
@@ -86,38 +111,24 @@ begin
     raise exception using errcode = '42501', message = 'Article must be in draft to submit';
   end if;
 
-  -- Verify required fields
-  if not exists (
-    select 1 from public.resource_articles
-    where id = p_article_id
-      and title is not null and char_length(btrim(title)) > 0
-      and content_markdown is not null and char_length(content_markdown) > 0
-      and author_identity_id is not null
-  ) then
-    raise exception using errcode = '42501', message = 'Article must have title, content, and author';
-  end if;
-
   update public.resource_articles
   set status = 'in_review', updated_at = now()
   where id = p_article_id;
 
-  -- Record audit event
+  -- Record audit event atomically.
   insert into public.resource_editorial_audit_events (
     article_id, actor_id, action, reason, created_at
   ) values (
-    p_article_id, p_actor_id, 'submit',
-    'Submitted for review', now()
+    p_article_id, actor_id, 'submit', 'Submitted for review', now()
   );
 end;
 $$;
 
--- Return only grant: editors can see submission outcomes
-grant execute on function public.submit_resource_article(uuid, uuid) to authenticated;
+grant execute on function public.submit_resource_article(uuid) to authenticated;
 
--- return_resource_article: in_review -> draft (actor = reviewer, reason required)
+-- return_resource_article: in_review -> draft (actor = reviewer ≠ author, reason required)
 create or replace function public.return_resource_article(
   p_article_id uuid,
-  p_actor_id uuid,
   p_reason text
 )
 returns void
@@ -125,22 +136,52 @@ language plpgsql
 security definer
 set search_path = public
 as $$
+declare
+  actor_id uuid;
+  actor_identity_id uuid;
+  article_author_identity_id uuid;
 begin
-  -- Verify reviewer ≠ author
-  if exists (
-    select 1 from public.resource_articles
-    where id = p_article_id
-      and author_identity_id = p_actor_id
-  ) then
-    raise exception using errcode = '42501', message = 'Reviewer cannot be the author';
+  -- Derive actor from auth.uid().
+  select auth.uid() into actor_id;
+  if actor_id is null then
+    raise exception using errcode = '42501', message = 'Authentication required';
   end if;
 
-  -- Verify current status is in_review
+  -- Resolve actor's editorial identity.
+  select ei.id into actor_identity_id
+  from public.resource_editorial_identities ei
+  where ei.user_id = actor_id
+    and ei.is_active = true
+    and ei.email_verified = true;
+
+  if actor_identity_id is null then
+    raise exception using errcode = '42501', message = 'No active editorial identity for caller';
+  end if;
+
+  -- Verify actor has reviewer capability.
+  if not exists (
+    select 1 from public.resource_editorial_capabilities ec
+    where ec.identity_id = actor_identity_id
+      and ec.role = 'reviewer'
+  ) then
+    raise exception using errcode = '42501', message = 'Reviewer capability required';
+  end if;
+
+  -- Verify current status is in_review.
   if not exists (
     select 1 from public.resource_articles
     where id = p_article_id and status = 'in_review'
   ) then
     raise exception using errcode = '42501', message = 'Article must be in review to return';
+  end if;
+
+  -- Verify reviewer is not the author.
+  select a.author_identity_id into article_author_identity_id
+  from public.resource_articles
+  where id = p_article_id;
+
+  if article_author_identity_id = actor_identity_id then
+    raise exception using errcode = '42501', message = 'Reviewer cannot be the author';
   end if;
 
   update public.resource_articles
@@ -150,17 +191,16 @@ begin
   insert into public.resource_editorial_audit_events (
     article_id, actor_id, action, reason, created_at
   ) values (
-    p_article_id, p_actor_id, 'return', p_reason, now()
+    p_article_id, actor_identity_id, 'return', p_reason, now()
   );
 end;
 $$;
 
-grant execute on function public.return_resource_article(uuid, uuid, text) to authenticated;
+grant execute on function public.return_resource_article(uuid, text) to authenticated;
 
 -- approve_resource_article: in_review -> scheduled/published (actor = reviewer ≠ author, AAL2)
 create or replace function public.approve_resource_article(
   p_article_id uuid,
-  p_actor_id uuid,
   p_target_status text,
   p_reason text
 )
@@ -169,22 +209,52 @@ language plpgsql
 security definer
 set search_path = public
 as $$
+declare
+  actor_id uuid;
+  actor_identity_id uuid;
+  article_author_identity_id uuid;
 begin
-  -- Verify reviewer ≠ author
-  if exists (
-    select 1 from public.resource_articles
-    where id = p_article_id
-      and author_identity_id = p_actor_id
-  ) then
-    raise exception using errcode = '42501', message = 'Reviewer cannot be the author';
+  -- Derive actor from auth.uid().
+  select auth.uid() into actor_id;
+  if actor_id is null then
+    raise exception using errcode = '42501', message = 'Authentication required';
   end if;
 
-  -- Verify current status is in_review
+  -- Resolve actor's editorial identity.
+  select ei.id into actor_identity_id
+  from public.resource_editorial_identities ei
+  where ei.user_id = actor_id
+    and ei.is_active = true
+    and ei.email_verified = true;
+
+  if actor_identity_id is null then
+    raise exception using errcode = '42501', message = 'No active editorial identity for caller';
+  end if;
+
+  -- Verify reviewer capability.
+  if not exists (
+    select 1 from public.resource_editorial_capabilities ec
+    where ec.identity_id = actor_identity_id
+      and ec.role = 'reviewer'
+  ) then
+    raise exception using errcode = '42501', message = 'Reviewer capability required';
+  end if;
+
+  -- Verify current status is in_review.
   if not exists (
     select 1 from public.resource_articles
     where id = p_article_id and status = 'in_review'
   ) then
     raise exception using errcode = '42501', message = 'Article must be in review to approve';
+  end if;
+
+  -- Verify reviewer is not the author.
+  select a.author_identity_id into article_author_identity_id
+  from public.resource_articles
+  where id = p_article_id;
+
+  if article_author_identity_id = actor_identity_id then
+    raise exception using errcode = '42501', message = 'Reviewer cannot be the author';
   end if;
 
   if p_target_status not in ('scheduled', 'published') then
@@ -198,25 +268,53 @@ begin
   insert into public.resource_editorial_audit_events (
     article_id, actor_id, action, reason, created_at
   ) values (
-    p_article_id, p_actor_id, p_target_status, p_reason, now()
+    p_article_id, actor_identity_id, p_target_status, p_reason, now()
   );
 end;
 $$;
 
-grant execute on function public.approve_resource_article(uuid, uuid, text, text) to authenticated;
+grant execute on function public.approve_resource_article(uuid, text, text) to authenticated;
 
 -- publish_resource_article: scheduled -> published (actor = publisher, AAL2)
 create or replace function public.publish_resource_article(
-  p_article_id uuid,
-  p_actor_id uuid
+  p_article_id uuid
 )
 returns void
 language plpgsql
 security definer
 set search_path = public
 as $$
+declare
+  actor_id uuid;
+  actor_identity_id uuid;
 begin
-  -- Verify scheduled time has arrived
+  -- Derive actor from auth.uid().
+  select auth.uid() into actor_id;
+  if actor_id is null then
+    raise exception using errcode = '42501', message = 'Authentication required';
+  end if;
+
+  -- Resolve actor's editorial identity.
+  select ei.id into actor_identity_id
+  from public.resource_editorial_identities ei
+  where ei.user_id = actor_id
+    and ei.is_active = true
+    and ei.email_verified = true;
+
+  if actor_identity_id is null then
+    raise exception using errcode = '42501', message = 'No active editorial identity for caller';
+  end if;
+
+  -- Verify publisher capability.
+  if not exists (
+    select 1 from public.resource_editorial_capabilities ec
+    where ec.identity_id = actor_identity_id
+      and ec.role = 'publisher'
+  ) then
+    raise exception using errcode = '42501', message = 'Publisher capability required';
+  end if;
+
+  -- Verify scheduled time has arrived.
   if not exists (
     select 1 from public.resource_articles
     where id = p_article_id
@@ -234,17 +332,16 @@ begin
   insert into public.resource_editorial_audit_events (
     article_id, actor_id, action, reason, created_at
   ) values (
-    p_article_id, p_actor_id, 'publish', 'Published scheduled article', now()
+    p_article_id, actor_identity_id, 'publish', 'Published scheduled article', now()
   );
 end;
 $$;
 
-grant execute on function public.publish_resource_article(uuid, uuid) to authenticated;
+grant execute on function public.publish_resource_article(uuid) to authenticated;
 
 -- archive_resource_article: published -> archived (actor = publisher, AAL2)
 create or replace function public.archive_resource_article(
   p_article_id uuid,
-  p_actor_id uuid,
   p_reason text
 )
 returns void
@@ -252,7 +349,37 @@ language plpgsql
 security definer
 set search_path = public
 as $$
+declare
+  actor_id uuid;
+  actor_identity_id uuid;
 begin
+  -- Derive actor from auth.uid().
+  select auth.uid() into actor_id;
+  if actor_id is null then
+    raise exception using errcode = '42501', message = 'Authentication required';
+  end if;
+
+  -- Resolve actor's editorial identity.
+  select ei.id into actor_identity_id
+  from public.resource_editorial_identities ei
+  where ei.user_id = actor_id
+    and ei.is_active = true
+    and ei.email_verified = true;
+
+  if actor_identity_id is null then
+    raise exception using errcode = '42501', message = 'No active editorial identity for caller';
+  end if;
+
+  -- Verify publisher capability.
+  if not exists (
+    select 1 from public.resource_editorial_capabilities ec
+    where ec.identity_id = actor_identity_id
+      and ec.role = 'publisher'
+  ) then
+    raise exception using errcode = '42501', message = 'Publisher capability required';
+  end if;
+
+  -- Verify article is published.
   if not exists (
     select 1 from public.resource_articles
     where id = p_article_id and status = 'published'
@@ -267,17 +394,16 @@ begin
   insert into public.resource_editorial_audit_events (
     article_id, actor_id, action, reason, created_at
   ) values (
-    p_article_id, p_actor_id, 'archive', p_reason, now()
+    p_article_id, actor_identity_id, 'archive', p_reason, now()
   );
 end;
 $$;
 
-grant execute on function public.archive_resource_article(uuid, uuid, text) to authenticated;
+grant execute on function public.archive_resource_article(uuid, text) to authenticated;
 
 -- correct_resource_article: published -> draft (new revision, new review, AAL2)
 create or replace function public.correct_resource_article(
   p_article_id uuid,
-  p_actor_id uuid,
   p_new_revision_id uuid,
   p_reason text
 )
@@ -286,8 +412,37 @@ language plpgsql
 security definer
 set search_path = public
 as $$
+declare
+  actor_id uuid;
+  actor_identity_id uuid;
 begin
-  -- Verify new revision belongs to same article
+  -- Derive actor from auth.uid().
+  select auth.uid() into actor_id;
+  if actor_id is null then
+    raise exception using errcode = '42501', message = 'Authentication required';
+  end if;
+
+  -- Resolve actor's editorial identity.
+  select ei.id into actor_identity_id
+  from public.resource_editorial_identities ei
+  where ei.user_id = actor_id
+    and ei.is_active = true
+    and ei.email_verified = true;
+
+  if actor_identity_id is null then
+    raise exception using errcode = '42501', message = 'No active editorial identity for caller';
+  end if;
+
+  -- Verify author capability.
+  if not exists (
+    select 1 from public.resource_editorial_capabilities ec
+    where ec.identity_id = actor_identity_id
+      and ec.role = 'author'
+  ) then
+    raise exception using errcode = '42501', message = 'Author capability required';
+  end if;
+
+  -- Verify new revision belongs to same article.
   if not exists (
     select 1 from public.resource_revisions
     where id = p_new_revision_id and article_id = p_article_id
@@ -302,9 +457,9 @@ begin
   insert into public.resource_editorial_audit_events (
     article_id, revision_id, actor_id, action, reason, created_at
   ) values (
-    p_article_id, p_new_revision_id, p_actor_id, 'correct', p_reason, now()
+    p_article_id, p_new_revision_id, actor_identity_id, 'correct', p_reason, now()
   );
 end;
 $$;
 
-grant execute on function public.correct_resource_article(uuid, uuid, uuid, text) to authenticated;
+grant execute on function public.correct_resource_article(uuid, uuid, text) to authenticated;

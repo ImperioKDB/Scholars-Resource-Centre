@@ -31,7 +31,7 @@ export class RevisionStore {
       .order('revision_number', { ascending: false });
 
     if (error) throw new Error(`Failed to load revisions: ${error.message}`);
-    return data ?? [];
+    return (data as Revision[] ?? []);
   }
 
   async createRevision(params: {
@@ -49,7 +49,7 @@ export class RevisionStore {
         state: params.state,
         change_summary: params.changeSummary,
         created_by: params.createdBy,
-      })
+      } as any)
       .select()
       .single();
 

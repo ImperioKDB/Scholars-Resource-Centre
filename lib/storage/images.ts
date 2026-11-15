@@ -12,6 +12,15 @@ export interface ImageInfo {
   bucket: string;
 }
 
+// File type is not available in ES2022 lib; declare a minimal interface.
+// Node 18+ and browsers both provide a File global, but TypeScript's ES2022
+// lib does not include it. We declare a minimal subset here.
+type FilePart = string | Buffer | ArrayBuffer | ArrayBufferView | Blob;
+interface FilePropertyBag {
+  type?: string;
+  lastModified?: number;
+}
+
 export class ResourceCenterImages {
   private client: ReturnType<typeof createSupabaseClient>;
   private bucket: string;

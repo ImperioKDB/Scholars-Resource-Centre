@@ -7,7 +7,7 @@
 // (profiles.is_admin) and does not create a second administrator system that
 // conflicts with Scholars' existing platform administrator authority.
 
-import { createClient as createSupabaseClient } from '@supabase/supabase-js';
+import { createClient as createSupabaseClient, PostgrestError } from '@supabase/supabase-js';
 
 export interface EditorialIdentity {
   id: string;
@@ -56,7 +56,7 @@ export class EditorialAuth {
       .eq('user_id', user.id)
       .eq('is_active', true)
       .eq('email_verified', true)
-      .maybeSingle();
+      .maybeSingle() as { data: EditorialIdentity | null; error: PostgrestError | null };
 
     if (identityError || !identity) return null;
 
@@ -80,7 +80,7 @@ export class EditorialAuth {
     const { data, error } = await this.client
       .from('resource_editorial_capabilities')
       .select('role')
-      .eq('identity_id', identityId);
+      .eq('identity_id', identityId) as { data: { role: string }[] | null; error: PostgrestError | null };
 
     if (error || !data) return { identity_id: identityId, roles: [] };
 

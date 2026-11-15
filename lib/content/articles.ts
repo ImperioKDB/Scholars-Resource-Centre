@@ -17,6 +17,7 @@ export interface PublicArticle {
   reading_time_minutes: number | null;
   published_at: string;
   last_reviewed_at: string | null;
+  status: string;
   author_name: string;
   author_bio: string | null;
   author_avatar_path: string | null;
@@ -28,6 +29,7 @@ export interface PublicCategory {
   name: string;
   description: string | null;
   display_order: number;
+  is_active: boolean;
 }
 
 export interface PublicArticleCategory {

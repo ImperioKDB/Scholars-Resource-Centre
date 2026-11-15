@@ -48,7 +48,7 @@ export class EditorialAudit {
         action: params.action,
         reason: params.reason,
         metadata: params.metadata ?? null,
-      });
+      } as any);
 
     if (error) {
       throw new Error(`Failed to record audit event: ${error.message}`);
@@ -67,7 +67,7 @@ export class EditorialAudit {
       .order('created_at', { ascending: false });
 
     if (error) throw new Error(`Failed to load audit events: ${error.message}`);
-    return data ?? [];
+    return (data ?? []) as AuditEvent[];
   }
 
   /**
@@ -80,6 +80,6 @@ export class EditorialAudit {
       .order('created_at', { ascending: false });
 
     if (error) throw new Error(`Failed to load audit events: ${error.message}`);
-    return data ?? [];
+    return (data ?? []) as AuditEvent[];
   }
 }

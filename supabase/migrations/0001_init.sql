@@ -1,6 +1,9 @@
 -- Resource Centre editorial database — initial schema.
 -- Additive only. No existing Scholars tables are referenced.
 -- Public access is through explicit projection views, not base tables.
+-- Editorial authentication is INDEPENDENT of Scholars student authentication
+-- (profiles table). Editorial roles are granted through a separate
+-- resource_editorial_capabilities table; profiles.is_admin is never used.
 
 -- ---------------------------------------------------------------------------
 -- Editorial identities
@@ -8,6 +11,7 @@
 
 create table if not exists public.resource_editorial_identities (
   id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users(id) on delete set null,
   email text not null unique check (char_length(btrim(email)) between 1 and 254),
   display_name text not null check (char_length(btrim(display_name)) between 1 and 160),
   bio text check (bio is null or char_length(bio) <= 1000),
@@ -72,7 +76,9 @@ create table if not exists public.resource_articles (
   constraint resource_articles_published_requires_time
     check (status <> 'published' or published_at is not null),
   constraint resource_articles_published_requires_reviewer
-    check (status not in ('in_review', 'scheduled', 'published') or reviewer_identity_id is not null)
+    check (status not in ('in_review', 'scheduled', 'published') or reviewer_identity_id is not null),
+  constraint resource_articles_author_not_reviewer
+    check (author_identity_id <> reviewer_identity_id OR reviewer_identity_id IS NULL)
 );
 create index if not exists resource_articles_public_idx
   on public.resource_articles(status, published_at desc);

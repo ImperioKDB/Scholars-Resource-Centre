@@ -1,7 +1,7 @@
 -- Seed data for local development and testing.
 -- Uses synthetic identities only; no production user data.
 
--- Insert synthetic editorial identities for testing.
+-- Insert synthetic editorial identities.
 insert into public.resource_editorial_identities (
   id, email, display_name, bio, is_active, email_verified
 ) values
