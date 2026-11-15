@@ -1,0 +1,23 @@
+{
+  "name": "scholars-resource-centre",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Backend backend for the Scholars Resource Centre editorial publishing system.",
+  "scripts": {
+    "test": "vitest run",
+    "supabase:start": "supabase start",
+    "supabase:stop": "supabase stop",
+    "supabase:db:reset": "supabase db reset",
+    "supabase:db:push": "supabase db push"
+  },
+  "devDependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "@supabase/ssr": "^0.5.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0",
+    "zod": "^3.23.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

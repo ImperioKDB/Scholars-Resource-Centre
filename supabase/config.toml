@@ -1,0 +1,19 @@
+[project]
+id = "scholars-resource-centre"
+name = "Scholars Resource Centre"
+
+[database]
+# External (public) URL for the Supabase project
+external_url = ""
+
+[auth]
+# External Auth URL
+external_url = ""
+
+[storage]
+# External Storage URL
+external_url = ""
+
+[functions]
+# External Edge Functions URL
+external_url = ""
